@@ -1,8 +1,12 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
+
 void main() {
   runApp(const MyApp());
 }
@@ -39,45 +43,91 @@ class WebViewExampleState extends State<WebViewExample> {
   static final Map<String, InternetAddress> _devices = {};
   static RawDatagramSocket? _discoverySocket;
 
-  static Future<void> discoverDevices() async {
-    _devices.clear();
-    _discoverySocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-    _discoverySocket!.broadcastEnabled = true;
+  Map<String, dynamic> protocolData = {
+    "protocol": {
+      "name": "YQ-COM2",
+      "version": "1.0",
+      "remotefunction": {
+        "name": "指令名",
+        "signature": "Rd+f … ew==",
+        "fingerprint": "31:F2:17:E5:25:4D:61:EF:AF:4F:29:CF:56:2B:F5:86:DC:DE:F2:65",
+        "tracecode": "112233",
+        "input": {
+          "parameter1": "value1",
+          "parameter2": "value2"
+        }
+      }
+    }
+  };
 
-    // 发送广播包
-    final discoveryPacket = Uint8List.fromList('DISCOVER'.codeUnits);
-    _discoverySocket!.send(
-      discoveryPacket,
-      InternetAddress('255.255.255.255'),
-      8888,
+  void deviceDiscover() async {
+    // 创建 JSON 格式数据
+    final jsonString = jsonEncode(protocolData);
+    final bytes = Uint8List.fromList(utf8.encode(jsonString));
+
+    // 创建 UDP Socket
+    RawDatagramSocket socket = await RawDatagramSocket.bind(
+      InternetAddress.anyIPv4,
+      10001,
+      reuseAddress: true,
     );
 
+    // 设置广播选项
+    socket.broadcastEnabled = true;
+
+    // 发送广播
+    socket.send(
+      bytes,
+      InternetAddress("255.255.255.255"), // 广播地址
+      10001, // 目标端口
+    );
+
+    print("✅ 已发送广播消息：\n${const JsonEncoder.withIndent('  ').convert(protocolData)}");
+
     // 监听响应
-    _discoverySocket!.listen((event) {
+    socket.listen((RawSocketEvent event) {
       if (event == RawSocketEvent.read) {
-        final datagram = _discoverySocket!.receive();
+        Datagram? datagram = socket.receive();
         if (datagram != null) {
-          final deviceId = String.fromCharCodes(datagram.data);
-          _devices[deviceId] = datagram.address;
-          print('Found device: $deviceId (${datagram.address.address})');
+          // 解析接收到的数据
+          final response = utf8.decode(datagram.data);
+          final sourceAddress = datagram.address.address;
+          final sourcePort = datagram.port;
+
+          try {
+            // 解析 JSON
+            final jsonResponse = jsonDecode(response);
+
+            print("\n🎯 收到来自 ${sourceAddress}:${sourcePort} 的响应：");
+            print(const JsonEncoder.withIndent('  ').convert(jsonResponse));
+
+            // 这里可以添加具体的响应处理逻辑
+            if (jsonResponse['status'] == 'success') {
+              handleSuccessResponse(jsonResponse);
+            } else {
+              handleErrorResponse(jsonResponse);
+            }
+          } catch (e) {
+            print("❌ JSON 解析失败：$e");
+            print("原始响应数据：$response");
+          }
         }
       }
     });
-
-    // 10秒后停止发现
-    await Future.delayed(Duration(seconds: 10));
-    _discoverySocket?.close();
   }
 
-  // 定向发送数据
-  static Future<void> sendToDevice(String deviceId, String message) async {
-    final address = _devices[deviceId];
-    if (address == null) throw Exception('Device not found');
+  void handleSuccessResponse(Map<String, dynamic> response) {
+    // 处理成功响应
+    print("🟢 设备处理成功：");
+    print("跟踪码：${response['tracecode']}");
+    print("结果：${response['result']}");
+  }
 
-    final socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-    final data = Uint8List.fromList(message.codeUnits);
-    socket.send(data, address, 8889);
-    socket.close();
+  void handleErrorResponse(Map<String, dynamic> response) {
+    // 处理错误响应
+    print("🔴 设备返回错误：");
+    print("错误码：${response['error_code']}");
+    print("错误信息：${response['error_message']}");
   }
   @override
   void initState() {
@@ -105,7 +155,7 @@ class WebViewExampleState extends State<WebViewExample> {
             onPressed: () {
               // 调用WebViewController的goBack方法，实现页面后退
               _controller.goBack();
-              discoverDevices();
+              deviceDiscover();
             },
           ),
           // 前进按钮
@@ -115,11 +165,7 @@ class WebViewExampleState extends State<WebViewExample> {
               // 调用WebViewController的goForward方法，实现页面前进
               _controller.goForward();
               // 发送测试消息给第一个设备
-              if (WebViewExampleState._devices.isNotEmpty) {
-                final targetId = WebViewExampleState._devices.keys.first;
-                print('Sending to $targetId');
-                WebViewExampleState.sendToDevice(targetId, 'Hello from Flutter!');
-              }
+
             },
           ),
           // 刷新按钮
